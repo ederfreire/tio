@@ -73,18 +73,14 @@ def encode(values):
     header_io.write(' ')
     header_io.write(values_io.getvalue())
 
-    return header_io.getvalue()    
+    return header_io.getvalue()
 
-class RemoteContainer(object):
-    def __init__(self, manager, handle, type, name):
-        self.manager = manager
-        self.handle = handle
-        self.type = type
-        self.name = name
-        
-    def __repr__(self):
-        return '<tioclient.RemoteContainer name="%s", type="%s">' % (self.name, self.type)
+#
+# this class is meant to be inherited by container classes,
+# just to make than more pythonic
+#
 
+class ContainerPythonizer(object):
     def __del__(self):
         self.Close()
 
@@ -107,6 +103,49 @@ class RemoteContainer(object):
             value, metadata = valueOrValueAndMetadata, None
             
         return self.set(key, value, metadata)
+
+    def append(self, value, metadata=None):
+        return self.push_back(value, metadata)
+
+    def extend(self, iterable):
+        for x in iterable:
+            self.push_back(x)
+            
+    def values(self):
+        return self.query()    
+
+    def keys(self):
+        return [x[0] for x in self.query_with_key_and_metadata()]
+
+    def __fluffler():
+        container.__dict__['__del__'] = __del__
+        container.__dict__['__getitem__'] = __getitem__
+        container.__dict__['__delitem__'] = __delitem__
+        container.__dict__['__len__'] = __len__
+        container.__dict__['__setitem__'] = __setitem__
+        container.__dict__['append'] = append
+        container.__dict__['extend'] = extend
+        container.__dict__['values'] = values
+        container.__dict__['keys'] = keys
+
+
+class PluginContainer(ContainerPythonizer):
+    def __init__(self, container):
+        self.container = container
+
+    def push_back(self, key, value, metadata):
+        self.container.push_back(key, value, metadata)
+
+
+class RemoteContainer(ContainerPythonizer):
+    def __init__(self, manager, handle, type, name):
+        self.manager = manager
+        self.handle = handle
+        self.type = type
+        self.name = name
+        
+    def __repr__(self):
+        return '<tioclient.RemoteContainer name="%s", type="%s">' % (self.name, self.type)
         
     def get_property(self, key, withKeyAndMetadata=False):
         key, value, metadata = self.send_data_command('get_property', key, None, None)
@@ -114,10 +153,6 @@ class RemoteContainer(object):
         
     def set_property(self, key, value, metadata=None):
         return self.send_data_command('set_property', key, value, metadata)
-
-    def extend(self, iterable):
-        for x in iterable:
-            self.push_back(x)
 
     def get(self, key, withKeyAndMetadata=False):
         key, value, metadata = self.send_data_command('get', key, None, None)
@@ -132,10 +167,7 @@ class RemoteContainer(object):
 
     def pop_front(self, withKeyAndMetadata=False):
         key, value, metadata = self.send_data_command('pop_front', None, None, None)
-        return value if not withKeyAndMetadata else (key, value, metadata)    
-
-    def append(self, value, metadata=None):
-        return self.push_back(value, metadata)
+        return value if not withKeyAndMetadata else (key, value, metadata)        
 
     def insert(self, key, value, metadata=None):
         return self.send_data_command('insert', key, value, metadata)
@@ -178,12 +210,6 @@ class RemoteContainer(object):
 
     def start_recording(self, destination_container):
         return self.manager.SendCommand('start_recording', self.handle, destination_container.handle)
-
-    def values(self):
-        return self.query()
-
-    def keys(self):
-        return [x[0] for x in self.query_with_key_and_metadata()]
 
     def query(self, startOffset=None, endOffset=None):
         # will return only the values
@@ -542,7 +568,7 @@ class TioServerConnection(object):
         self.s.close()
         self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         
-    def __CreateOrOpenContainer(self, command, name, type):
+    def __CreateOropen(self, command, name, type):
         info = self.SendCommand(command, name if not type else name + ' ' + type)
         handle = info['handle']
         type = info['type']
@@ -553,11 +579,11 @@ class TioServerConnection(object):
     def CloseContainer(self, handle):
         self.SendCommand('close', handle)
 
-    def CreateContainer(self, name, type):
-        return self.__CreateOrOpenContainer('create', name, type)
+    def create(self, name, type):
+        return self.__CreateOropen('create', name, type)
 
-    def OpenContainer(self, name, type = ''):
-        return self.__CreateOrOpenContainer('open', name, type)
+    def open(self, name, type = ''):
+        return self.__CreateOropen('open', name, type)
 
     def Query(self, handle, startOffset=None, endOffset=None):
         l = []
@@ -639,9 +665,9 @@ def MasterSpeedTest():
     for test in tests:
         type = test['type']
         hasKey = test['hasKey']
-        ds = man.CreateContainer(namePerfix + type, type)
+        ds = man.create(namePerfix + type, type)
         print type
-        result = SpeedTest(ds.Set if hasKey else ds.PushBack, count, bytes, hasKey)
+        result = SpeedTest(ds.set if hasKey else ds.push_back, count, bytes, hasKey)
 
         print '%s: %f msg/s' % (type, result)
 
@@ -650,14 +676,14 @@ def TestWaitAndPop():
         print (key, value, metadata)
         
     man = TioServerConnection('localhost', 6666)
-    container = man.CreateContainer('abc', 'volatile_vector')
+    container = man.create('abc', 'volatile_vector')
     container.WaitAndPopNext(f)
     container.PushBack(key=None, value='abababu')
     container.WaitAndPopNext(f)
     container.WaitAndPopNext(f)
     container.PushBack(key=None, value='xpto')
 
-    container = man.CreateContainer('xpto', 'volatile_vector')
+    container = man.create('xpto', 'volatile_vector')
     container.Set('key1', 'value1')
     container.Set('key2', 'value2')
     container.WaitAndPopKey('key1', f)
@@ -698,9 +724,9 @@ def OpenByUrl(url, create_container_type=None):
     
     server = TioServerConnection(address, port)
     if create_container_type:
-        return server.CreateContainer(container, create_container_type)
+        return server.create(container, create_container_type)
     else:
-        return server.OpenContainer(container)
+        return server.open(container)
 
 def Connect(url):
     address, port, container = ParseUrl(url)
@@ -732,21 +758,21 @@ def TestQuery():
             print x
         
 
-    do_all_queries(tio.CreateContainer('pl', 'persistent_list'))
-    do_all_queries(tio.CreateContainer('pm', 'persistent_map'))
+    do_all_queries(tio.create('pl', 'persistent_list'))
+    do_all_queries(tio.create('pm', 'persistent_map'))
 
-    container = tio.CreateContainer('vl', 'volatile_list')
+    container = tio.create('vl', 'volatile_list')
     container.extend([x for x in xrange(10)])
     do_all_queries(container)
 
-    container = tio.CreateContainer('vm', 'volatile_map')
+    container = tio.create('vm', 'volatile_map')
     for x in range(10): container[str(x)] = x
     do_all_queries(container)
 
 def DiffTest():
     def DiffTest_Map():
         tio = Connect('tio://127.0.0.1:6666')
-        vm = tio.CreateContainer('vm', 'volatile_map')
+        vm = tio.create('vm', 'volatile_map')
         diff = vm.diff_start()
 
         for x in range(20) : vm[str(x)] = x*x
@@ -761,7 +787,7 @@ def DiffTest():
 
     def DiffTest_List():
         tio = Connect('tio://127.0.0.1:6666')
-        vl = tio.CreateContainer('vl', 'volatile_list')
+        vl = tio.create('vl', 'volatile_list')
         diff = vl.diff_start()
 
         vl.extend(range(100))
@@ -779,7 +805,7 @@ def DiffTest():
 
 def DoTest():
     man = Connect('tio://127.0.0.1:6666')
-    container = man.CreateContainer('test123', 'volatile_list')
+    container = man.create('test123', 'volatile_list')
 
     container.clear()    
 
